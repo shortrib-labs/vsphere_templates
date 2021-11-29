@@ -1,0 +1,81 @@
+#!/bin/bash -e
+
+function echo_found() {
+  message=${1:-"skipping"}
+  echo -e "\033[1;32mfound\033[0m, $message"
+}
+
+function echo_notfound() {
+  message=${1:-"creating"}
+  echo -e "\033[1;32mnot found\033[0m, $message"
+}
+
+function echo_goodchecksum() {
+  message=${1:-"ready to upload"}
+  echo -e "\033[1;32mchecksum matches\033[0m, $message"
+}
+
+function echo_badchecksum() {
+  message=${1:-"skipping"}
+  echo -e "\033[1;32mbad checksum\033[0m, $message"
+}
+
+function ensure_upload_template() {
+  template_inventory_folder=${1}
+  template_name=${2}
+  template_ova_path=${3}
+
+  if [ "$template_inventory_folder" = "" ]; then
+    template_path=$template_name
+  else
+    template_path="$template_inventory_folder/$template_name"
+  fi
+
+  echo -n "Checking for template at $template_path: "
+  if [[ "$(govc vm.info $template_path)" == *"$template_name"* ]]; then
+    echo_found
+  else
+    echo_notfound
+    govc import.ova -name ${template_name} -folder $template_inventory_folder $template_ova_path
+    govc vm.markastemplate $template_inventory_folder/$template_name
+  fi
+
+}
+
+function create_ubuntu_template() {
+  # Get Ubuntu parameters from params yaml
+  template_name=$(yq e .ubuntu.template-name ${PARAMS_YAML})
+  image_url=$(YQ e .ubuntu.image ${PARAMS_YAML})
+  image_checksum=$(yq e .ubuntu.checksum ${PARAMS_YAML})
+
+  download_file=${WORK_DIR}/${template_name}.ova
+  echo -n "Downloading ubuntu image to ${download_file}..."
+  if [[ -f ${download_file} ]] ; then
+    echo_found "image already downloaded, skipping"
+  else
+    curl --location --output ${download_file} --silent ${image_url}
+  fi
+
+  echo -n "Validating checksum for ${download_file}: "
+  checksum="$(sha256sum ${download_file} | awk '{ print $1 ;}')"
+  if [[ ${checksum} = ${image_checksum} ]] ; then
+    echo_goodchecksum
+    ensure_upload_template $TEMPLATE_FOLDER $template_name $download_file 
+  else
+    echo_badchecksum
+  fi
+}
+
+# Get vSphere configuration vars from params yaml
+export GOVC_URL=$(yq e .vsphere.server ${PARAMS_YAML})
+export GOVC_USERNAME=$(yq e .vsphere.username ${PARAMS_YAML})
+export GOVC_PASSWORD=$(yq e .vsphere.password ${PARAMS_YAML})
+export GOVC_DATASTORE=$(yq e .vsphere.datastore ${PARAMS_YAML})
+export TEMPLATE_FOLDER=$(yq e .vsphere.template-folder ${PARAMS_YAML})
+export DATACENTER=$(yq e .vsphere.datacenter ${PARAMS_YAML})
+export NETWORK=$(yq e .vsphere.network ${PARAMS_YAML})
+export TLS_THUMBPRINT=$(yq e .vsphere.tls-thumbprint ${PARAMS_YAML})
+export GOVC_RESOURCE_POOL=$(yq e .vsphere.resource-pool ${PARAMS_YAML})
+
+# create templates
+create_ubuntu_template
